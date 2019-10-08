@@ -67,6 +67,11 @@ Bililive-go是一个支持多种直播平台的直播录制工具，运行在 CL
         <td>www.openrec.tv</td>
         <td>滋瓷</td>
     </tr>
+    <tr align="center">
+        <td>企鹅电竞</td>
+        <td>egame.qq.com</td>
+        <td>滋瓷</td>
+    </tr>
 </table>
 
 ## 依赖
@@ -94,3 +99,8 @@ $ make
 
 ## API
 [API doc](https://github.com/hr3lxphr6j/bililive-go/blob/master/docs/API.md)
+
+## 参考
+- [you-get](https://github.com/soimort/you-get)
+- [ykdl](https://github.com/zhangn1985/ykdl)
+- [youtube-dl](https://github.com/ytdl-org/youtube-dl)
