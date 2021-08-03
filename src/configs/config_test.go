@@ -12,26 +12,16 @@ func TestNewConfig(t *testing.T) {
 	c, err := NewConfigWithFile("../../config.yml")
 	assert.NoError(t, err)
 	assert.Equal(t, file, c.file)
-
-}
-
-func TestTLS_Verify(t *testing.T) {
-	var tls *TLS
-	assert.NoError(t, tls.Verify())
-	tls = new(TLS)
-	assert.NoError(t, tls.Verify())
-	tls.Enable = true
-	assert.Error(t, tls.Verify())
 }
 
 func TestRPC_Verify(t *testing.T) {
 	var rpc *RPC
-	assert.NoError(t, rpc.Verify())
+	assert.NoError(t, rpc.verify())
 	rpc = new(RPC)
 	rpc.Bind = "foo@bar"
-	assert.NoError(t, rpc.Verify())
+	assert.NoError(t, rpc.verify())
 	rpc.Enable = true
-	assert.Error(t, rpc.Verify())
+	assert.Error(t, rpc.verify())
 }
 
 func TestConfig_Verify(t *testing.T) {

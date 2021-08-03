@@ -1,16 +1,17 @@
 package cc
 
 import (
+	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
-	"regexp"
 
+	"github.com/hr3lxphr6j/requests"
 	"github.com/tidwall/gjson"
 
-	"github.com/hr3lxphr6j/bililive-go/src/lib/http"
-	"github.com/hr3lxphr6j/bililive-go/src/lib/utils"
 	"github.com/hr3lxphr6j/bililive-go/src/live"
 	"github.com/hr3lxphr6j/bililive-go/src/live/internal"
+	"github.com/hr3lxphr6j/bililive-go/src/pkg/utils"
 )
 
 const (
@@ -18,6 +19,7 @@ const (
 	cnName = "CC直播"
 
 	apiUrl = "http://cgi.v.cc.163.com/video_play_url/"
+	dataRe = `<script id="__NEXT_DATA__" type="application/json" crossorigin="anonymous">(.*?)</script>`
 )
 
 func init() {
@@ -34,59 +36,78 @@ func (b *builder) Build(url *url.URL) (live.Live, error) {
 
 type Live struct {
 	internal.BaseLive
-	ccid string
 }
 
-func (l *Live) parseCCId() error {
-	dom, err := http.Get(l.Url.String(), nil, nil)
-	if err != nil {
-		return err
-	}
-	ccid := utils.Match1(`anchorCcId\s*:\s*'(\d*)'`, string(dom))
-	if ccid == "" {
-		return live.ErrInternalError
-	}
-	l.ccid = ccid
-	return nil
-}
-
-func (l *Live) GetInfo() (info *live.Info, err error) {
-	dom, err := http.Get(l.Url.String(), nil, nil)
+func (l *Live) getData() (*gjson.Result, error) {
+	resp, err := requests.Get(l.Url.String(), live.CommonUserAgent)
 	if err != nil {
 		return nil, err
 	}
+	body, err := resp.Bytes()
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, live.ErrRoomNotExist
+	}
+	data := utils.UnescapeHTMLEntity(utils.Match1(dataRe, string(body)))
+	if data == "" {
+		return nil, errors.New("data is empty")
+	}
+	result := gjson.Parse(data)
+	return &result, nil
+}
 
+func (l *Live) getCcID() (string, error) {
+	data, err := l.getData()
+	if err != nil {
+		return "", err
+	}
+	return data.Get("props.pageProps.roomInfoInitData.micfirst.ccid").String(), nil
+}
+
+func (l *Live) GetInfo() (info *live.Info, err error) {
+	data, err := l.getData()
+	if err != nil {
+		return nil, err
+	}
 	var (
-		hostName = utils.UnescapeHTMLEntity(utils.Match1(`anchorName\s*:\s*'([^']*)',`, string(dom)))
-		roomName = utils.UnescapeHTMLEntity(utils.Match1(`js-live-title nick" title\s*=\s*"([^"]*)"`, string(dom)))
+		hostName = data.Get("props.pageProps.roomInfoInitData.micfirst.nickname").String()
+		roomName = data.Get("props.pageProps.roomInfoInitData.live.title").String()
 	)
 
 	if hostName == "" || roomName == "" {
-		return nil, live.ErrInternalError
+		return nil, errors.New("failed to parse host`s name and room`s name")
 	}
 
 	info = &live.Info{
 		Live:     l,
 		HostName: hostName,
 		RoomName: roomName,
-		Status:   len(regexp.MustCompile(`isLive\s*:\s*\d+,`).FindAll(dom, -1)) > 0,
+		Status:   data.Get("props.pageProps.roomInfoInitData.live.swf").String() != "",
 	}
 	return info, nil
 }
 
 func (l *Live) GetStreamUrls() (us []*url.URL, err error) {
-	if l.ccid == "" {
-		if err := l.parseCCId(); err != nil {
-			return nil, err
-		}
-	}
-	data, err := http.Get(fmt.Sprintf("%s%s", apiUrl, l.ccid), nil, nil)
+	ccid, err := l.getCcID()
 	if err != nil {
 		return nil, err
 	}
+	resp, err := requests.Get(fmt.Sprintf("%s%s", apiUrl, ccid), live.CommonUserAgent)
+	if err != nil {
+		return nil, err
+	}
+	body, err := resp.Bytes()
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, live.ErrRoomNotExist
+	}
 	return utils.GenUrls(
-		gjson.GetBytes(data, "videourl").String(),
-		gjson.GetBytes(data, "bakvideourl").String(),
+		gjson.GetBytes(body, "videourl").String(),
+		gjson.GetBytes(body, "bakvideourl").String(),
 	)
 }
 

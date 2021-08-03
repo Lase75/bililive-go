@@ -1,15 +1,16 @@
 package qq
 
 import (
+	"net/http"
 	"net/url"
 	"strings"
 
+	"github.com/hr3lxphr6j/requests"
 	"github.com/tidwall/gjson"
 
-	"github.com/hr3lxphr6j/bililive-go/src/lib/http"
-	"github.com/hr3lxphr6j/bililive-go/src/lib/utils"
 	"github.com/hr3lxphr6j/bililive-go/src/live"
 	"github.com/hr3lxphr6j/bililive-go/src/live/internal"
+	"github.com/hr3lxphr6j/bililive-go/src/pkg/utils"
 )
 
 const (
@@ -40,37 +41,45 @@ func (l *Live) GetInfo() (info *live.Info, err error) {
 		return nil, live.ErrRoomUrlIncorrect
 	}
 	anchorID := paths[1]
-	dom, err := http.Get(l.Url.String(), nil, nil)
+	resp, err := requests.Get(mobileUrl, live.CommonUserAgent, requests.Query("anchorid", anchorID))
 	if err != nil {
 		return nil, err
 	}
-	roomName := utils.UnescapeHTMLEntity(utils.Match1(`title:"([^"]*)"`, string(dom)))
-	hostName := utils.UnescapeHTMLEntity(utils.Match1(`nickName:"([^"]+)"`, string(dom)))
-	dom2, err := http.Get(mobileUrl, nil, map[string]string{
-		"anchorid": anchorID,
-	})
+	if resp.StatusCode != http.StatusOK {
+		return nil, live.ErrRoomNotExist
+	}
+	body, err := resp.Text()
 	if err != nil {
 		return nil, err
 	}
-	isLive := utils.Match1(`"isLive":(\d+)`, string(dom2))
+	roomName := utils.ParseString(utils.Match1(`"title":"([^"\{\}]*)"`, body), utils.ParseUnicode)
+	hostName := utils.ParseString(utils.Match1(`"nickName":"([^"]+)"`, body), utils.ParseUnicode)
+	isLive := utils.Match1(`"isLive":(\d+)`, body)
 	if roomName == "" || hostName == "" || isLive == "" {
 		return nil, live.ErrInternalError
 	}
 	info = &live.Info{
 		Live:     l,
-		RoomName: string(roomName),
-		HostName: string(hostName),
+		RoomName: roomName,
+		HostName: hostName,
 		Status:   isLive == "1",
 	}
 	return info, nil
 }
 
 func (l *Live) GetStreamUrls() (us []*url.URL, err error) {
-	dom, err := http.Get(l.Url.String(), nil, nil)
+	resp, err := requests.Get(l.Url.String(), live.CommonUserAgent)
 	if err != nil {
 		return nil, err
 	}
-	result := utils.Match1(`"urlArray":(\[[^\]]+\])`, string(dom))
+	if resp.StatusCode != http.StatusOK {
+		return nil, live.ErrRoomNotExist
+	}
+	body, err := resp.Text()
+	if err != nil {
+		return nil, err
+	}
+	result := utils.Match1(`"urlArray":(\[[^\]]+\])`, body)
 	if result == "" {
 		return nil, live.ErrInternalError
 	}

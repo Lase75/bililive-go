@@ -2,51 +2,63 @@ package flag
 
 import (
 	"os"
+	"time"
 
 	"github.com/alecthomas/kingpin"
 
 	"github.com/hr3lxphr6j/bililive-go/src/configs"
 	"github.com/hr3lxphr6j/bililive-go/src/consts"
+	"github.com/hr3lxphr6j/bililive-go/src/pkg/utils"
 )
 
 var (
-	App             = kingpin.New(consts.AppName, "A command-line live stream save tools.").Version(consts.AppVersion)
-	Debug           = App.Flag("debug", "Enable debug mode.").Default("false").Bool()
-	Interval        = App.Flag("interval", "Interval of query live status").Default("20").Short('t').Int()
-	Output          = App.Flag("output", "Output file path.").Short('o').Default("./").String()
-	Input           = App.Flag("input", "Live room urls").Short('i').Strings()
-	Conf            = App.Flag("config", "Config file.").Short('c').String()
-	Rpc             = App.Flag("enable-rpc", "Enable RPC server.").Default("false").Bool()
-	RpcAddr         = App.Flag("rpc-addr", "RPC server listen port").Default(":8080").String()
-	RpcToken        = App.Flag("rpc-token", "RPC server token.").String()
-	RpcTLS          = App.Flag("enable-rpc-tls", "Enable TLS for RPC server").Bool()
-	CertFile        = App.Flag("rpc-tls-cert-file", "Cert file for TLS on RPC").String()
-	KeyFile         = App.Flag("rpc-tls-key-file", "Key file for TLS on RPC").String()
-	NativeFlvParser = App.Flag("native-flv-parser", "use native flv parser").Default("false").Bool()
+	app = kingpin.New(consts.AppName, "A command-line live stream save tools.").Version(consts.AppVersion)
+
+	Debug           = app.Flag("debug", "Enable debug mode.").Default("false").Bool()
+	Interval        = app.Flag("interval", "Interval of query live status").Default("20").Short('t').Int()
+	Output          = app.Flag("output", "Output file path.").Short('o').Default("./").String()
+	Input           = app.Flag("input", "Live room urls").Short('i').Strings()
+	Conf            = app.Flag("config", "Config file.").Short('c').String()
+	RPC             = app.Flag("enable-rpc", "Enable RPC server.").Default("false").Bool()
+	RPCBind         = app.Flag("rpc-bind", "RPC server bind address").Default(":8080").String()
+	NativeFlvParser = app.Flag("native-flv-parser", "use native flv parser").Default("false").Bool()
+	OutputFileTmpl  = app.Flag("output-file-tmpl", "output file name template").Default("").String()
+	SplitStrategies = app.Flag("split-strategies", "video split strategies, support\"on_room_name_changed\", \"max_duration:(duration)\"").Strings()
 )
 
 func init() {
-	kingpin.MustParse(App.Parse(os.Args[1:]))
+	kingpin.MustParse(app.Parse(os.Args[1:]))
 }
 
+// GenConfigFromFlags generates configuration by parsing command line parameters.
 func GenConfigFromFlags() *configs.Config {
-	return &configs.Config{
+	cfg := &configs.Config{
 		RPC: configs.RPC{
-			Enable: *Rpc,
-			Bind:   *RpcAddr,
-			Token:  *RpcToken,
-			TLS: configs.TLS{
-				Enable:   *RpcTLS,
-				CertFile: *CertFile,
-				KeyFile:  *KeyFile,
-			},
+			Enable: *RPC,
+			Bind:   *RPCBind,
 		},
 		Debug:      *Debug,
 		Interval:   *Interval,
 		OutPutPath: *Output,
+		OutputTmpl: *OutputFileTmpl,
 		LiveRooms:  *Input,
 		Feature: configs.Feature{
 			UseNativeFlvParser: *NativeFlvParser,
 		},
 	}
+	if SplitStrategies != nil && len(*SplitStrategies) > 0 {
+		for _, s := range *SplitStrategies {
+			// TODO: not hard code
+			if s == "on_room_name_changed" {
+				cfg.VideoSplitStrategies.OnRoomNameChanged = true
+			}
+			if durStr := utils.Match1(`max_duration:(.*)`, s); durStr != "" {
+				dur, err := time.ParseDuration(durStr)
+				if err == nil {
+					cfg.VideoSplitStrategies.MaxDuration = dur
+				}
+			}
+		}
+	}
+	return cfg
 }

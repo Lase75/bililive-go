@@ -11,20 +11,23 @@ import (
 
 	"github.com/hr3lxphr6j/bililive-go/src/configs"
 	"github.com/hr3lxphr6j/bililive-go/src/instance"
-	"github.com/hr3lxphr6j/bililive-go/src/lib/events"
-	evtmock "github.com/hr3lxphr6j/bililive-go/src/lib/events/mock"
 	livepkg "github.com/hr3lxphr6j/bililive-go/src/live"
 	livemock "github.com/hr3lxphr6j/bililive-go/src/live/mock"
 	"github.com/hr3lxphr6j/bililive-go/src/log"
+	"github.com/hr3lxphr6j/bililive-go/src/pkg/events"
+	evtmock "github.com/hr3lxphr6j/bililive-go/src/pkg/events/mock"
 )
 
 func TestRefresh(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	ed := evtmock.NewMockDispatcher(ctrl)
-	ctx := context.WithValue(context.Background(), instance.InstanceKey, &instance.Instance{
+	cfg := &configs.Config{VideoSplitStrategies: configs.VideoSplitStrategies{
+		OnRoomNameChanged: false,
+	}}
+	ctx := context.WithValue(context.Background(), instance.Key, &instance.Instance{
 		EventDispatcher: ed,
-		Config:          new(configs.Config),
+		Config:          cfg,
 	})
 	log.New(ctx)
 	live := livemock.NewMockLive(ctrl)
@@ -33,20 +36,30 @@ func TestRefresh(t *testing.T) {
 	// false -> false
 	live.EXPECT().GetInfo().Return(&livepkg.Info{Status: false}, nil)
 	l.refresh()
-	assert.False(t, l.status)
+	assert.False(t, l.status.roomStatus)
 
 	// false -> true
 	live.EXPECT().GetInfo().Return(&livepkg.Info{Status: true}, nil)
 	live.EXPECT().SetLastStartTime(gomock.Any())
 	ed.EXPECT().DispatchEvent(events.NewEvent(LiveStart, live))
 	l.refresh()
-	assert.True(t, l.status)
+	assert.True(t, l.status.roomStatus)
+
+	// true -> true, roomName change
+	live.EXPECT().GetInfo().Return(&livepkg.Info{Status: true, RoomName: "a"}, nil)
+	l.refresh()
+
+	// true -> true, roomName change
+	cfg.VideoSplitStrategies.OnRoomNameChanged = true
+	live.EXPECT().GetInfo().Return(&livepkg.Info{Status: true, RoomName: "b"}, nil)
+	ed.EXPECT().DispatchEvent(events.NewEvent(RoomNameChanged, live))
+	l.refresh()
 
 	// true -> false
 	live.EXPECT().GetInfo().Return(&livepkg.Info{Status: false}, nil)
 	ed.EXPECT().DispatchEvent(events.NewEvent(LiveEnd, live))
 	l.refresh()
-	assert.False(t, l.status)
+	assert.False(t, l.status.roomStatus)
 }
 
 func TestRefreshWithError(t *testing.T) {
@@ -54,7 +67,7 @@ func TestRefreshWithError(t *testing.T) {
 	defer ctrl.Finish()
 	ed := evtmock.NewMockDispatcher(ctrl)
 	cache := gcache.New(4).LRU().Build()
-	ctx := context.WithValue(context.Background(), instance.InstanceKey, &instance.Instance{
+	ctx := context.WithValue(context.Background(), instance.Key, &instance.Instance{
 		EventDispatcher: ed,
 		Cache:           cache,
 		Config:          new(configs.Config),
@@ -66,7 +79,7 @@ func TestRefreshWithError(t *testing.T) {
 	live.EXPECT().GetInfo().Return(nil, errors.New("this is error"))
 	live.EXPECT().GetRawUrl().Return("")
 	l.refresh()
-	assert.False(t, l.status)
+	assert.False(t, l.status.roomStatus)
 }
 
 func TestListenerStartAndClose(t *testing.T) {
@@ -74,7 +87,7 @@ func TestListenerStartAndClose(t *testing.T) {
 	defer ctrl.Finish()
 	ed := evtmock.NewMockDispatcher(ctrl)
 	cache := gcache.New(4).LRU().Build()
-	ctx := context.WithValue(context.Background(), instance.InstanceKey, &instance.Instance{
+	ctx := context.WithValue(context.Background(), instance.Key, &instance.Instance{
 		EventDispatcher: ed,
 		Cache:           cache,
 		Config:          &configs.Config{Interval: 5},

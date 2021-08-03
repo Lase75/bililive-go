@@ -1,42 +1,27 @@
 package configs
 
 import (
-	"crypto/tls"
 	"fmt"
 	"io/ioutil"
 	"net"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v2"
 )
 
-type TLS struct {
-	Enable   bool   `yaml:"enable"`
-	CertFile string `yaml:"cert_file"`
-	KeyFile  string `yaml:"key_file"`
-}
-
-func (t *TLS) Verify() error {
-	if t == nil {
-		return nil
-	}
-	if !t.Enable {
-		return nil
-	}
-	if _, err := tls.LoadX509KeyPair(t.CertFile, t.KeyFile); err != nil {
-		return err
-	}
-	return nil
-}
-
+// RPC info.
 type RPC struct {
 	Enable bool   `yaml:"enable"`
-	Bind   string `yaml:"port"`
-	Token  string `yaml:"token"`
-	TLS    TLS    `yaml:"tls"`
+	Bind   string `yaml:"bind"`
 }
 
-func (r *RPC) Verify() error {
+var defaultRPC = RPC{
+	Enable: true,
+	Bind:   "127.0.0.1:8080",
+}
+
+func (r *RPC) verify() error {
 	if r == nil {
 		return nil
 	}
@@ -46,31 +31,54 @@ func (r *RPC) Verify() error {
 	if _, err := net.ResolveTCPAddr("tcp", r.Bind); err != nil {
 		return err
 	}
-	if err := r.TLS.Verify(); err != nil {
-		return err
-	}
 	return nil
 }
 
+// Feature info.
 type Feature struct {
 	UseNativeFlvParser bool `yaml:"use_native_flv_parser"`
 }
 
-type Config struct {
-	RPC        RPC      `yaml:"rpc"`
-	Debug      bool     `yaml:"debug"`
-	Interval   int      `yaml:"interval"`
-	OutPutPath string   `yaml:"out_put_path"`
-	Feature    Feature  `yaml:"feature"`
-	LiveRooms  []string `yaml:"live_rooms"`
-	file       string
+// VideoSplitStrategies info.
+type VideoSplitStrategies struct {
+	OnRoomNameChanged bool          `yaml:"on_room_name_changed"`
+	MaxDuration       time.Duration `yaml:"max_duration"`
 }
 
+// Config content all config info.
+type Config struct {
+	RPC                  RPC      `yaml:"rpc"`
+	Debug                bool     `yaml:"debug"`
+	Interval             int      `yaml:"interval"`
+	OutPutPath           string   `yaml:"out_put_path"`
+	Feature              Feature  `yaml:"feature"`
+	LiveRooms            []string `yaml:"live_rooms"`
+	OutputTmpl           string   `yaml:"out_put_tmpl"`
+	file                 string
+	VideoSplitStrategies VideoSplitStrategies `yaml:"video_split_strategies"`
+}
+
+var defaultConfig = Config{
+	RPC:        defaultRPC,
+	Debug:      false,
+	Interval:   30,
+	OutPutPath: "./",
+	Feature: Feature{
+		UseNativeFlvParser: false,
+	},
+	LiveRooms: []string{},
+	file:      "",
+	VideoSplitStrategies: VideoSplitStrategies{
+		OnRoomNameChanged: false,
+	},
+}
+
+// Verify will return an error when this config has problem.
 func (c *Config) Verify() error {
 	if c == nil {
 		return fmt.Errorf("config is null")
 	}
-	if err := c.RPC.Verify(); err != nil {
+	if err := c.RPC.verify(); err != nil {
 		return err
 	}
 	if c.Interval <= 0 {
@@ -78,6 +86,9 @@ func (c *Config) Verify() error {
 	}
 	if _, err := os.Stat(c.OutPutPath); err != nil {
 		return fmt.Errorf(`the out put path: "%s" is not exist`, c.OutPutPath)
+	}
+	if maxDur := c.VideoSplitStrategies.MaxDuration; maxDur > 0 && maxDur <= time.Minute {
+		return fmt.Errorf("the minimum value of max_duration is one minute")
 	}
 	return nil
 }
@@ -87,7 +98,7 @@ func NewConfigWithFile(file string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("can`t open file: %s", file)
 	}
-	config := new(Config)
+	config := &defaultConfig
 	if err = yaml.Unmarshal(b, config); err != nil {
 		return nil, err
 	}

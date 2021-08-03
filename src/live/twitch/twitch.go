@@ -3,12 +3,13 @@ package twitch
 import (
 	"fmt"
 	"math/rand"
+	"net/http"
 	"net/url"
 	"strings"
 
+	"github.com/hr3lxphr6j/requests"
 	"github.com/tidwall/gjson"
 
-	"github.com/hr3lxphr6j/bililive-go/src/lib/http"
 	"github.com/hr3lxphr6j/bililive-go/src/live"
 	"github.com/hr3lxphr6j/bililive-go/src/live/internal"
 )
@@ -22,6 +23,9 @@ const (
 	liveBaseUrl   = "https://usher.ttvnw.net/api/channel/hls/%s.m3u8"
 	streamApiUrl  = "https://api.twitch.tv/kraken/streams/%s"
 	tokenApiUrl   = "https://api.twitch.tv/api/channels/%s/access_token"
+
+	v5Header = "application/vnd.twitchtv.v5+json"
+	userApiUrl = "https://api.twitch.tv/kraken/users?login=%s"
 )
 
 func init() {
@@ -40,7 +44,7 @@ var headers = map[string]string{"client-id": clientId}
 
 type Live struct {
 	internal.BaseLive
-	hostName, roomName string
+	userId, hostName, roomName string
 }
 
 // 在hostName, roomName为空执行，在live有效时再从steam api解析
@@ -50,9 +54,34 @@ func (l *Live) parseInfo() error {
 		return live.ErrRoomUrlIncorrect
 	}
 	chanId := paths[1]
-	body, err := http.Get(fmt.Sprintf(channelApiUrl, chanId), headers, nil)
+	resp, err := requests.Get(fmt.Sprintf(userApiUrl, chanId), live.CommonUserAgent,
+		requests.Header("client-id", clientId),requests.Header("Accept",v5Header))
 	if err != nil {
+		return err
+	}
+	body, err := resp.Bytes()
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
 		return live.ErrRoomNotExist
+	}
+	if gjson.GetBytes(body,"_total").Int() < 1{
+		return live.ErrRoomNotExist
+	}
+	l.userId = gjson.GetBytes(body,"users").Array()[0].Get("_id").String()
+
+	resp, err = requests.Get(fmt.Sprintf(channelApiUrl, l.userId), live.CommonUserAgent,
+		requests.Header("client-id", clientId),requests.Header("Accept",v5Header))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return live.ErrRoomNotExist
+	}
+	body, err = resp.Bytes()
+	if err != nil {
+		return err
 	}
 	l.hostName = gjson.GetBytes(body, "name").String()
 	l.roomName = gjson.GetBytes(body, "status").String()
@@ -60,12 +89,20 @@ func (l *Live) parseInfo() error {
 }
 
 func (l *Live) GetInfo() (info *live.Info, err error) {
-	if l.hostName == "" || l.roomName == "" {
+	if l.hostName == "" || l.roomName == "" || l.userId == ""{
 		if err := l.parseInfo(); err != nil {
 			return nil, err
 		}
 	}
-	body, err := http.Get(fmt.Sprintf(streamApiUrl, l.hostName), headers, nil)
+	resp, err := requests.Get(fmt.Sprintf(streamApiUrl, l.userId), live.CommonUserAgent,
+		requests.Header("client-id", clientId),requests.Header("Accept",v5Header))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, live.ErrRoomNotExist
+	}
+	body, err := resp.Bytes()
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +125,14 @@ func (l *Live) GetStreamUrls() (us []*url.URL, err error) {
 			return nil, err
 		}
 	}
-	body, err := http.Get(fmt.Sprintf(tokenApiUrl, l.hostName), headers, nil)
+	resp, err := requests.Get(fmt.Sprintf(tokenApiUrl, l.hostName), live.CommonUserAgent, requests.Header("client-id", clientId))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, live.ErrRoomNotExist
+	}
+	body, err := resp.Bytes()
 	if err != nil {
 		return nil, err
 	}

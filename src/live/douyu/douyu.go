@@ -2,22 +2,23 @@ package douyu
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"text/template"
 	"time"
 
-	"github.com/hr3lxphr6j/bililive-go/src/lib/utils"
+	"github.com/hr3lxphr6j/requests"
+
 	"github.com/hr3lxphr6j/bililive-go/src/live"
 	"github.com/hr3lxphr6j/bililive-go/src/live/internal"
+	"github.com/hr3lxphr6j/bililive-go/src/pkg/utils"
 
 	"github.com/robertkrimen/otto"
 	"github.com/satori/go.uuid"
 	"github.com/tidwall/gjson"
-
-	"github.com/hr3lxphr6j/bililive-go/src/lib/http"
 )
 
 /*
@@ -29,7 +30,7 @@ const (
 	domain = "www.douyu.com"
 	cnName = "斗鱼"
 
-	liveInfoUrl = "https://open.douyucdn.cn/api/RoomApi/room"
+	liveInfoUrl = "https://www.douyu.com/betard"
 	liveEncUrl  = "https://www.douyu.com/swf_api/homeH5Enc"
 	liveAPIUrl  = "https://www.douyu.com/lapi/live/getH5Play"
 )
@@ -47,18 +48,14 @@ func (b *builder) Build(url *url.URL) (live.Live, error) {
 }
 
 var (
-	cryptoJS []byte
-	header   = map[string]string{
-		"Referer":      "https://www.douyu.com",
-		"content-type": "application/x-www-form-urlencoded",
+	cryptoJS        []byte
+	douyuRoomIDRegs = []string{
+		`\$ROOM\.room_id\s*=\s*(\d+)`,
+		`room_id\s*=\s*(\d+)`,
+		`"room_id.?":(\d+)`,
+		`data-onlineid=(\d+)`,
 	}
-	douyuRoomIDRegs = []*regexp.Regexp{
-		regexp.MustCompile(`\$ROOM\.room_id\s*=\s*(\d+)`),
-		regexp.MustCompile(`room_id\s*=\s*(\d+)`),
-		regexp.MustCompile(`"room_id.?":(\d+)`),
-		regexp.MustCompile(`data-onlineid=(\d+)`),
-	}
-	workflowReg = regexp.MustCompile(`function ub98484234\(.+?\Weval\((\w+)\);`)
+	workflowReg = `function ub98484234\(.+?\Weval\((\w+)\);`
 	jsDomTmpl   = template.Must(template.New("jsDom").Parse(`
 		{{.DebugMessages}} = { {{.DecryptedCodes}}: []};
 		if (!this.window) {window = {};}
@@ -83,7 +80,6 @@ var (
 		}
 		eval({{.Workflow}});
 	`))
-
 	jsDebugTmpl = template.Must(template.New("jsDebug").Parse(`
 		var {{.Ub98484234}} = ub98484234;
 		ub98484234 = function(p1, p2, p3) {
@@ -107,12 +103,29 @@ func render(tmpl *template.Template, data interface{}) (string, error) {
 }
 
 func loadCryptoJS() {
-	body, err := http.Get("https://cdnjs.cloudflare.com/ajax/libs/crypto-js/3.1.9-1/crypto-js.min.js", nil, nil)
-	if err != nil {
-		// TODO: not panic
-		panic(err)
+	var (
+		resp *requests.Response
+		body []byte
+		err  error
+	)
+	cdnUrls := [...]string{"https://cdnjs.cloudflare.com/ajax/libs/crypto-js/3.1.9-1/crypto-js.min.js",
+		"https://cdn.jsdelivr.net/npm/crypto-js@3.1.9-1/crypto-js.min.js",
+		"https://cdn.staticfile.org/crypto-js/3.1.9-1/crypto-js.min.js",
+		"https://cdn.bootcdn.net/ajax/libs/crypto-js/3.1.9-1/crypto-js.min.js"}
+	
+	for _, url := range cdnUrls {
+		resp, err = requests.Get(url)
+		if err != nil || resp.StatusCode != http.StatusOK {
+			continue
+		}
+		body, err = resp.Bytes()
+		if err != nil {
+			continue
+		}
+		cryptoJS = body
+		return
 	}
-	cryptoJS = body
+	panic(fmt.Errorf("failed to load CryptoJS, please check network"))
 }
 
 func getEngineWithCryptoJS() (*otto.Otto, error) {
@@ -131,57 +144,74 @@ type Live struct {
 	roomID string
 }
 
-func (l *Live) fetchRoomID() {
+func (l *Live) fetchRoomID() error {
 	if l.roomID != "" {
-		return
+		return nil
 	}
-	l.roomID = strings.Split(l.Url.Path, "/")[1]
-	body, err := http.Get(l.Url.String(), nil, nil)
+	var body []byte
+	resp, err := requests.Get(l.Url.String(), live.CommonUserAgent)
 	if err != nil {
-		return
+		goto ERROR
+	}
+	if resp.StatusCode != http.StatusOK {
+		goto ERROR
+	}
+	body, err = resp.Bytes()
+	if err != nil {
+		goto ERROR
 	}
 	for _, reg := range douyuRoomIDRegs {
-		strs := reg.FindStringSubmatch(string(body))
-		if len(strs) == 2 {
-			l.roomID = strs[1]
-			return
+		if str := utils.Match1(reg, string(body)); str != "" {
+			l.roomID = str
+			return nil
 		}
 	}
+	goto ERROR
+ERROR:
+	return errors.New("failed to fetch room id")
 }
 
 func (l *Live) GetInfo() (info *live.Info, err error) {
-	l.fetchRoomID()
-	body, err := http.Get(fmt.Sprintf("%s/%s", liveInfoUrl, l.roomID), nil, nil)
+	if err := l.fetchRoomID(); err != nil {
+		return nil, err
+	}
+	resp, err := requests.Get(fmt.Sprintf("%s/%s", liveInfoUrl, l.roomID), live.CommonUserAgent)
 	if err != nil {
 		return nil, err
 	}
-	if gjson.GetBytes(body, "error").Int() != 0 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, live.ErrRoomNotExist
+	}
+	body, err := resp.Bytes()
+	if err != nil {
+		return nil, err
 	}
 	info = &live.Info{
 		Live:     l,
-		HostName: gjson.GetBytes(body, "data.owner_name").String(),
-		RoomName: gjson.GetBytes(body, "data.room_name").String(),
-		Status:   gjson.GetBytes(body, "data.room_status").String() == "1",
+		HostName: gjson.GetBytes(body, "room.owner_name").String(),
+		RoomName: gjson.GetBytes(body, "room.room_name").String(),
+		Status:   gjson.GetBytes(body, "room.show_status").Int() == 1 && gjson.GetBytes(body, "room.videoLoop").Int() == 0,
 	}
 	return info, nil
 
 }
 
-func (l *Live) getSignParams() (url.Values, error) {
-	body, err := http.Get(liveEncUrl, nil, map[string]string{
-		"rids": l.roomID,
-	})
+func (l *Live) getSignParams() (map[string]string, error) {
+	resp, err := requests.Get(liveEncUrl, live.CommonUserAgent, requests.Query("rids", l.roomID))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, live.ErrRoomNotExist
+	}
+	body, err := resp.Bytes()
 	if err != nil {
 		return nil, err
 	}
 
-	jsEnc := gjson.GetBytes(body, fmt.Sprintf("data.room%s", l.roomID)).String()
+	jsEnc := gjson.GetBytes(body, "data.room"+l.roomID).String()
 
-	workflow := ""
-	if workflowMatch := workflowReg.FindStringSubmatch(jsEnc); len(workflowMatch) == 2 {
-		workflow = workflowMatch[1]
-	}
+	workflow := utils.Match1(workflowReg, jsEnc)
 
 	context := struct {
 		DebugMessages  string
@@ -229,11 +259,11 @@ func (l *Live) getSignParams() (url.Values, error) {
 	if err != nil {
 		return nil, err
 	}
-	values := url.Values{
-		"cdn":  {""},
-		"iar":  {"0"},
-		"ive":  {"0"},
-		"rate": {"0"},
+	values := map[string]string{
+		"cdn":  "",
+		"iar":  "0",
+		"ive":  "0",
+		"rate": "0",
 	}
 	resoult, err := res.Object().Get(context.Resoult)
 	if err != nil {
@@ -244,25 +274,43 @@ func (l *Live) getSignParams() (url.Values, error) {
 			continue
 		}
 		strs := strings.SplitN(entry, "=", 2)
-		values.Set(strs[0], strs[1])
+		values[strs[0]] = strs[1]
 	}
 	return values, nil
 }
 
 func (l *Live) GetStreamUrls() (us []*url.URL, err error) {
-	l.fetchRoomID()
+	if err := l.fetchRoomID(); err != nil {
+		return nil, err
+	}
 	params, err := l.getSignParams()
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.Post(fmt.Sprintf("%s/%s", liveAPIUrl, l.roomID), header, nil, []byte(params.Encode()))
-	if gjson.GetBytes(resp, "error").Int() != 0 {
-		return nil, fmt.Errorf("get stream error")
+	resp, err := requests.Post(
+		fmt.Sprintf("%s/%s", liveAPIUrl, l.roomID),
+		requests.Form(params),
+		requests.Header("origin", "https://www.douyu.com"),
+		requests.Referer(l.GetRawUrl()),
+		live.CommonUserAgent,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, live.ErrInternalError
+	}
+	body, err := resp.Bytes()
+	if err != nil {
+		return nil, err
+	}
+	if gjson.GetBytes(body, "error").Int() != 0 {
+		return nil, live.ErrRoomNotExist
 	}
 	return utils.GenUrls(
 		fmt.Sprintf("%s/%s",
-			gjson.GetBytes(resp, "data.rtmp_url").String(),
-			gjson.GetBytes(resp, "data.rtmp_live").String(),
+			gjson.GetBytes(body, "data.rtmp_url").String(),
+			gjson.GetBytes(body, "data.rtmp_live").String(),
 		),
 	)
 }
